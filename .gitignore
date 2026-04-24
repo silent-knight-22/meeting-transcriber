@@ -1,0 +1,21 @@
+# Environment variables - NEVER commit these
+.env
+backend/.env
+
+# Node
+node_modules/
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# VS Code
+.vscode/
+
+# Docker volumes
+postgres-data/
+
+# Logs
+*.log
+logs/
