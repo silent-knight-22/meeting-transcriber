@@ -1,0 +1,24 @@
+{
+  "name": "meeting-transcriber-backend",
+  "version": "1.0.0",
+  "description": "Backend for Chrome Extension meeting transcription with speaker diarization",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js",
+    "test": "echo \"Tests coming in phase 6\" && exit 0"
+  },
+  "dependencies": {
+    "assemblyai": "^4.0.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.0.0",
+    "express": "^4.18.0",
+    "morgan": "^1.10.0",
+    "pg": "^8.11.0",
+    "uuid": "^9.0.0",
+    "ws": "^8.14.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.0"
+  }
+}
