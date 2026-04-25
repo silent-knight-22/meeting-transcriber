@@ -1,0 +1,43 @@
+# version: '3.9'
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: meeting_transcriber_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: transcriber
+      POSTGRES_PASSWORD: transcriber123
+      POSTGRES_DB: meeting_transcriber
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./backend/src/db/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U transcriber -d meeting_transcriber"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: meeting_transcriber_backend
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      ASSEMBLYAI_API_KEY: ${ASSEMBLYAI_API_KEY}
+      DATABASE_URL: postgresql://transcriber:transcriber123@postgres:5432/meeting_transcriber
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./backend/src:/app/src
+
+volumes:
+  postgres-data:

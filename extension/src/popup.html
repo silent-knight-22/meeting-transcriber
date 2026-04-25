@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Meeting Transcriber</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <!-- Header -->
+    <div class="header">
+      <div class="header-icon">🎙️</div>
+      <div>
+        <div class="header-title">Meeting Transcriber</div>
+        <div class="header-subtitle">Speaker-separated transcription</div>
+      </div>
+    </div>
+
+    <!-- Status Bar -->
+    <div class="status-bar">
+      <div class="status-dot" id="statusDot"></div>
+      <span class="status-text" id="statusText">Connecting to backend...</span>
+    </div>
+
+    <!-- Meeting Info (shown when meeting detected) -->
+    <div class="meeting-info" id="meetingInfo">
+      <div class="meeting-platform" id="meetingPlatform">—</div>
+      <div class="meeting-title" id="meetingTitle">No meeting detected</div>
+    </div>
+
+    <!-- Controls -->
+    <div class="controls">
+      <button class="btn btn-record" id="btnRecord" disabled>
+        ⏺ Start Recording
+      </button>
+      <button class="btn btn-stop" id="btnStop" disabled style="display: none">
+        ⏹ Stop Recording
+      </button>
+      <button class="btn btn-secondary" id="btnSessions">
+        📋 View Past Sessions
+      </button>
+    </div>
+
+    <!-- Processing State -->
+    <div class="processing-state" id="processingState">
+      <div class="processing-spinner"></div>
+      <div class="processing-text" id="processingText">
+        Transcribing audio...
+      </div>
+    </div>
+
+    <!-- Transcript -->
+    <div class="transcript-section" id="transcriptSection">
+      <div class="transcript-header">
+        <span class="transcript-label">Transcript</span>
+        <span class="transcript-count" id="utteranceCount">0 utterances</span>
+      </div>
+      <div class="transcript-box" id="transcriptBox">
+        <div class="transcript-empty" id="emptyState">
+          Transcript will appear here after recording
+        </div>
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <div class="footer">
+      <a class="footer-link" id="exportLink" href="#" style="display: none"
+        >⬇ Export transcript</a
+      >
+      <span class="session-id" id="sessionIdDisplay"></span>
+      <a
+        class="footer-link"
+        href="http://localhost:3001/api/sessions"
+        target="_blank"
+        >API ↗</a
+      >
+    </div>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
