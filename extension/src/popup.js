@@ -169,30 +169,35 @@ const checkMeeting = async () => {
 btnRecord.addEventListener('click', async () => {
   try {
     btnRecord.disabled = true;
-    btnRecord.textContent = 'Starting...';
+    btnRecord.textContent = '⏳ Starting...';
+    setStatus('Connecting to backend...', '');
 
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab) throw new Error('No active tab found');
+
+    console.log('[Popup] Starting recording on tab:', tab.id, tab.url);
 
     const response = await chrome.runtime.sendMessage({
       type: 'START_RECORDING',
       tabId: tab.id,
       meetingInfo: {
-        platform: meetingPlatform.textContent,
-        title: meetingTitle.textContent,
+        platform: meetingPlatform.textContent || 'Unknown',
+        title: meetingTitle.textContent || tab.title || 'Recording',
       },
     });
 
+    console.log('[Popup] START_RECORDING response:', response);
+
     if (!response?.success) {
-      throw new Error(response?.error || 'Failed to start recording');
+      throw new Error(response?.error || 'Failed to start — check background console');
     }
   } catch (err) {
-    console.error('Start recording error:', err);
-    setStatus(`Error: ${err.message}`, '');
+    console.error('[Popup] Start recording error:', err);
+    setStatus(`❌ ${err.message}`, '');
     btnRecord.disabled = false;
-    btnRecord.textContent = '⏺ Start Recording';
+    btnRecord.innerHTML = '⏺ Start Recording';
   }
 });
-
 // ── Stop Button ───────────────────────────────────────────────
 btnStop.addEventListener('click', async () => {
   btnStop.disabled = true;

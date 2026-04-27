@@ -1,214 +1,52 @@
-// Background Service Worker
-// Manages audio capture, WebSocket connection to backend, and state
+// Background Service Worker (MV3)
+// Orchestrates offscreen document for audio capture + WebSocket
 
-const BACKEND_WS_URL = 'ws://localhost:3001';
-const BACKEND_HTTP_URL = 'http://localhost:3001';
+const OFFSCREEN_URL = chrome.runtime.getURL('src/offscreen.html');
 
-// Extension state
 let state = {
   isRecording: false,
   sessionId: null,
   meetingPlatform: null,
   meetingTitle: null,
-  ws: null,
-  mediaRecorder: null,
-  captureStream: null,
-  transcript: [],
-  connectedTabId: null,
+  offscreenReady: false,
 };
 
-// ── WebSocket Management ─────────────────────────────────────
-
-const connectWebSocket = () => {
-  return new Promise((resolve, reject) => {
-    const ws = new WebSocket(BACKEND_WS_URL);
-
-    ws.onopen = () => {
-      console.log('[MeetingTranscriber] WebSocket connected to backend');
-      state.ws = ws;
-      resolve(ws);
-    };
-
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        handleBackendMessage(data);
-      } catch (e) {
-        console.error('[MeetingTranscriber] WS parse error:', e);
-      }
-    };
-
-    ws.onerror = (err) => {
-      console.error('[MeetingTranscriber] WebSocket error:', err);
-      reject(err);
-    };
-
-    ws.onclose = () => {
-      console.log('[MeetingTranscriber] WebSocket disconnected');
-      state.ws = null;
-      // Notify popup of disconnection
-      broadcastToPopup({ type: 'WS_DISCONNECTED' });
-    };
-  });
-};
-
-const handleBackendMessage = (data) => {
-  console.log('[MeetingTranscriber] Backend message:', data.type);
-
-  switch (data.type) {
-    case 'session_started':
-      state.sessionId = data.sessionId;
-      broadcastToPopup({ type: 'SESSION_STARTED', sessionId: data.sessionId });
-      break;
-
-    case 'processing':
-      broadcastToPopup({ type: 'PROCESSING', message: data.message });
-      break;
-
-    case 'transcript_complete':
-      state.transcript = data.utterances || [];
-      // Save to chrome.storage for popup to read
-      chrome.storage.local.set({
-        [`transcript_${data.sessionId}`]: data.utterances,
-        lastSessionId: data.sessionId,
-      });
-      broadcastToPopup({ type: 'TRANSCRIPT_READY', utterances: data.utterances, sessionId: data.sessionId });
-      break;
-
-    case 'error':
-      broadcastToPopup({ type: 'BACKEND_ERROR', message: data.message });
-      break;
-
-    case 'connected':
-      broadcastToPopup({ type: 'WS_CONNECTED' });
-      break;
-  }
-};
-
-// ── Audio Capture ────────────────────────────────────────────
-
-const startCapture = async (tabId) => {
-  try {
-    // tabCapture captures the tab's audio output
-    const stream = await new Promise((resolve, reject) => {
-      chrome.tabCapture.capture(
-        { audio: true, video: false },
-        (captureStream) => {
-          if (chrome.runtime.lastError) {
-            reject(new Error(chrome.runtime.lastError.message));
-          } else if (!captureStream) {
-            reject(new Error('Failed to capture tab audio — no stream returned'));
-          } else {
-            resolve(captureStream);
-          }
-        }
-      );
+// ── Offscreen document management ────────────────────────────
+const ensureOffscreen = async () => {
+  const existing = await chrome.offscreen.hasDocument();
+  if (!existing) {
+    await chrome.offscreen.createDocument({
+      url: OFFSCREEN_URL,
+      reasons: ['USER_MEDIA'],
+      justification: 'Capture tab audio for meeting transcription',
     });
-
-    state.captureStream = stream;
-
-    // Use MediaRecorder to chunk the audio
-    const mediaRecorder = new MediaRecorder(stream, {
-      mimeType: 'audio/webm;codecs=opus',
-      audioBitsPerSecond: 16000,
-    });
-
-    mediaRecorder.ondataavailable = async (event) => {
-      if (event.data && event.data.size > 0 && state.ws && state.ws.readyState === WebSocket.OPEN) {
-        // Convert blob to ArrayBuffer and send as binary
-        const buffer = await event.data.arrayBuffer();
-        state.ws.send(buffer);
-      }
-    };
-
-    // Send audio chunks every 250ms for near-real-time processing
-    mediaRecorder.start(250);
-    state.mediaRecorder = mediaRecorder;
-    state.connectedTabId = tabId;
-
-    console.log('[MeetingTranscriber] Audio capture started');
-    return true;
-  } catch (err) {
-    console.error('[MeetingTranscriber] Capture error:', err);
-    throw err;
+    // Small delay for offscreen doc to initialize
+    await new Promise(r => setTimeout(r, 300));
   }
 };
 
-const stopCapture = () => {
-  if (state.mediaRecorder && state.mediaRecorder.state !== 'inactive') {
-    state.mediaRecorder.stop();
-  }
-  if (state.captureStream) {
-    state.captureStream.getTracks().forEach((t) => t.stop());
-  }
-  state.mediaRecorder = null;
-  state.captureStream = null;
+const closeOffscreen = async () => {
+  const exists = await chrome.offscreen.hasDocument();
+  if (exists) await chrome.offscreen.closeDocument();
 };
 
-// ── Main Recording Control ───────────────────────────────────
-
-const startRecording = async (tabId, meetingInfo) => {
-  try {
-    if (state.isRecording) throw new Error('Already recording');
-
-    // Connect WebSocket
-    await connectWebSocket();
-
-    // Tell backend to start a new session
-    state.ws.send(JSON.stringify({
-      type: 'start_session',
-      title: meetingInfo?.title || 'Meeting Recording',
-    }));
-
-    // Start audio capture
-    await startCapture(tabId);
-
-    state.isRecording = true;
-    state.meetingPlatform = meetingInfo?.platform;
-    state.meetingTitle = meetingInfo?.title;
-
-    // Save recording state
-    await chrome.storage.local.set({ isRecording: true });
-
-    broadcastToPopup({ type: 'RECORDING_STARTED' });
-    console.log('[MeetingTranscriber] Recording started');
-  } catch (err) {
-    console.error('[MeetingTranscriber] Start recording error:', err);
-    broadcastToPopup({ type: 'ERROR', message: err.message });
-    throw err;
-  }
-};
-
-const stopRecording = async () => {
-  try {
-    stopCapture();
-
-    if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-      state.ws.send(JSON.stringify({ type: 'stop_session' }));
-    }
-
-    state.isRecording = false;
-    await chrome.storage.local.set({ isRecording: false });
-
-    broadcastToPopup({ type: 'RECORDING_STOPPED' });
-    console.log('[MeetingTranscriber] Recording stopped — awaiting transcription');
-  } catch (err) {
-    console.error('[MeetingTranscriber] Stop recording error:', err);
-    broadcastToPopup({ type: 'ERROR', message: err.message });
-  }
-};
-
-// ── Popup Communication ──────────────────────────────────────
-
-const broadcastToPopup = (message) => {
-  chrome.runtime.sendMessage(message).catch(() => {
-    // Popup might be closed — that's fine
-  });
-};
-
-// ── Message Listener (from popup) ───────────────────────────
-
+// ── Messages FROM offscreen doc ───────────────────────────────
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  // Messages from offscreen document
+  if (message.type === 'FROM_BACKEND') {
+    handleBackendMessage(message.raw);
+    return;
+  }
+  if (message.type === 'WS_CLOSED') {
+    broadcastToPopup({ type: 'WS_DISCONNECTED' });
+    return;
+  }
+  if (message.type === 'CAPTURE_ERROR') {
+    broadcastToPopup({ type: 'ERROR', message: message.message });
+    return;
+  }
+
+  // Messages from popup
   (async () => {
     switch (message.type) {
       case 'GET_STATE':
@@ -225,6 +63,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           await startRecording(message.tabId, message.meetingInfo);
           sendResponse({ success: true });
         } catch (err) {
+          console.error('[BG] Start error:', err);
           sendResponse({ success: false, error: err.message });
         }
         break;
@@ -247,7 +86,104 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         break;
     }
   })();
-  return true; // keep message channel open for async response
+  return true;
 });
 
-console.log('[MeetingTranscriber] Background service worker started');
+// ── Backend message handler ───────────────────────────────────
+const handleBackendMessage = (raw) => {
+  try {
+    const data = JSON.parse(raw);
+    console.log('[BG] Backend msg:', data.type);
+
+    switch (data.type) {
+      case 'session_started':
+        state.sessionId = data.sessionId;
+        broadcastToPopup({ type: 'SESSION_STARTED', sessionId: data.sessionId });
+        break;
+      case 'processing':
+        broadcastToPopup({ type: 'PROCESSING', message: data.message });
+        break;
+      case 'transcript_complete':
+        chrome.storage.local.set({
+          [`transcript_${data.sessionId}`]: data.utterances,
+          lastSessionId: data.sessionId,
+        });
+        broadcastToPopup({ type: 'TRANSCRIPT_READY', utterances: data.utterances, sessionId: data.sessionId });
+        break;
+      case 'error':
+        broadcastToPopup({ type: 'BACKEND_ERROR', message: data.message });
+        break;
+      case 'connected':
+        broadcastToPopup({ type: 'WS_CONNECTED' });
+        break;
+    }
+  } catch (e) {
+    console.error('[BG] Parse error:', e);
+  }
+};
+
+// ── Start recording ───────────────────────────────────────────
+const startRecording = async (tabId, meetingInfo) => {
+  if (state.isRecording) throw new Error('Already recording');
+
+  // Get stream ID from tabCapture (must be in background)
+  const streamId = await new Promise((resolve, reject) => {
+    chrome.tabCapture.getMediaStreamId(
+      { targetTabId: tabId },
+      (id) => {
+        if (chrome.runtime.lastError) {
+          reject(new Error(chrome.runtime.lastError.message));
+        } else {
+          resolve(id);
+        }
+      }
+    );
+  });
+
+  console.log('[BG] Got streamId:', streamId);
+
+  // Create offscreen document to do actual capture
+  await ensureOffscreen();
+
+  // Send streamId to offscreen doc
+  const response = await chrome.runtime.sendMessage({
+    type: 'START_CAPTURE',
+    streamId,
+    title: meetingInfo?.title || 'Meeting Recording',
+  });
+
+  if (!response?.success) {
+    throw new Error(response?.error || 'Offscreen capture failed');
+  }
+
+  state.isRecording = true;
+  state.meetingPlatform = meetingInfo?.platform;
+  state.meetingTitle = meetingInfo?.title;
+
+  await chrome.storage.local.set({ isRecording: true });
+  broadcastToPopup({ type: 'RECORDING_STARTED' });
+  console.log('[BG] Recording started successfully');
+};
+
+// ── Stop recording ────────────────────────────────────────────
+const stopRecording = async () => {
+  try {
+    await chrome.runtime.sendMessage({ type: 'STOP_CAPTURE' });
+  } catch (e) {
+    console.warn('[BG] Stop capture error:', e);
+  }
+
+  state.isRecording = false;
+  await chrome.storage.local.set({ isRecording: false });
+  broadcastToPopup({ type: 'RECORDING_STOPPED' });
+
+  // Close offscreen doc after short delay
+  setTimeout(() => closeOffscreen(), 2000);
+};
+
+// ── Broadcast to popup ────────────────────────────────────────
+const broadcastToPopup = (message) => {
+  chrome.runtime.sendMessage(message).catch(() => {});
+};
+
+console.log('[BG] Service worker started');

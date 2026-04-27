@@ -41,13 +41,12 @@
     "activeTab",
     "storage",
     "tabs",
-    "scripting"
+    "scripting",
+    "offscreen"
   ],
 
   "host_permissions": [
-    "https://meet.google.com/*",
-    "https://*.zoom.us/*",
-    "https://teams.microsoft.com/*"
+    "<all_urls>"
   ],
 
   "content_security_policy": {

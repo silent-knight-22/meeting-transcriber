@@ -65,9 +65,11 @@ const endSession = async (sessionId) => {
       }));
     }
   } catch (err) {
-    logger.error(`Transcription failed for session ${sessionId}:`, err.message);
+    const errMsg = err?.message || JSON.stringify(err);
+    logger.error(`Transcription failed for session ${sessionId}: ${errMsg}`);
+    logger.error('Full error:', err);
     if (ws && ws.readyState === 1) {
-      ws.send(JSON.stringify({ type: 'error', message: err.message }));
+      ws.send(JSON.stringify({ type: 'error', message: errMsg }));
     }
   }
 

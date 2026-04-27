@@ -53,11 +53,16 @@ wss.on('connection', (ws) => {
       const data = JSON.parse(message.toString());
 
       if (data.type === 'start_session') {
-        const session = await startSession(ws, data.title || null);
-        currentSessionId = session.id;
-        ws.send(JSON.stringify({ type: 'session_started', sessionId: session.id }));
-        logger.info(`Session started via WS: ${session.id}`);
-      }
+  try {
+    const session = await startSession(ws, data.title || null);
+    currentSessionId = session.id;
+    ws.send(JSON.stringify({ type: 'session_started', sessionId: session.id }));
+    logger.info(`Session started via WS: ${session.id}`);
+  } catch (err) {
+    logger.error('Failed to start session:', err.message);
+    ws.send(JSON.stringify({ type: 'error', message: 'Session start failed: ' + err.message }));
+  }
+}
 
       else if (data.type === 'stop_session') {
         if (!currentSessionId) {
