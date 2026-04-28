@@ -37,10 +37,10 @@ wss.on('connection', (ws) => {
   logger.info('New WebSocket connection from extension');
   let currentSessionId = null;
 
-  ws.on('message', async (message) => {
+  ws.on('message', async (message, isBinary) => {
     try {
       // Check if it's a binary audio chunk
-      if (Buffer.isBuffer(message)) {
+      if (isBinary || Buffer.isBuffer(message)) {
         if (!currentSessionId) {
           ws.send(JSON.stringify({ type: 'error', message: 'No active session. Send start_session first.' }));
           return;

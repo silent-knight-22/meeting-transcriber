@@ -3,13 +3,11 @@
   "name": "Meeting Transcriber",
   "version": "1.0.0",
   "description": "Real-time meeting transcription with speaker diarization for Google Meet and Zoom",
-
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
   },
-
   "action": {
     "default_popup": "src/popup.html",
     "default_icon": {
@@ -18,12 +16,9 @@
     },
     "default_title": "Meeting Transcriber"
   },
-
   "background": {
-    "service_worker": "src/background.js",
-    "type": "module"
+    "service_worker": "src/background.js"
   },
-
   "content_scripts": [
     {
       "matches": [
@@ -31,11 +26,12 @@
         "https://*.zoom.us/*",
         "https://teams.microsoft.com/*"
       ],
-      "js": ["src/content.js"],
+      "js": [
+        "src/content.js"
+      ],
       "run_at": "document_idle"
     }
   ],
-
   "permissions": [
     "tabCapture",
     "activeTab",
@@ -44,11 +40,9 @@
     "scripting",
     "offscreen"
   ],
-
   "host_permissions": [
     "<all_urls>"
   ],
-
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'self'"
   }

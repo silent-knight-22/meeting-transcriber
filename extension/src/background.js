@@ -1,5 +1,4 @@
 // Background Service Worker (MV3)
-// Orchestrates offscreen document for audio capture + WebSocket
 
 const OFFSCREEN_URL = chrome.runtime.getURL('src/offscreen.html');
 
@@ -8,10 +7,9 @@ let state = {
   sessionId: null,
   meetingPlatform: null,
   meetingTitle: null,
-  offscreenReady: false,
 };
 
-// ── Offscreen document management ────────────────────────────
+// ── Offscreen document ────────────────────────────────────────
 const ensureOffscreen = async () => {
   const existing = await chrome.offscreen.hasDocument();
   if (!existing) {
@@ -20,70 +18,86 @@ const ensureOffscreen = async () => {
       reasons: ['USER_MEDIA'],
       justification: 'Capture tab audio for meeting transcription',
     });
-    // Small delay for offscreen doc to initialize
-    await new Promise(r => setTimeout(r, 300));
+    await new Promise(r => setTimeout(r, 500));
   }
 };
 
 const closeOffscreen = async () => {
-  const exists = await chrome.offscreen.hasDocument();
-  if (exists) await chrome.offscreen.closeDocument();
+  try {
+    const exists = await chrome.offscreen.hasDocument();
+    if (exists) await chrome.offscreen.closeDocument();
+  } catch (e) {}
 };
 
-// ── Messages FROM offscreen doc ───────────────────────────────
+// ── Message router ────────────────────────────────────────────
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  // Messages from offscreen document
+
+  // FROM offscreen doc → forward backend messages to popup
   if (message.type === 'FROM_BACKEND') {
     handleBackendMessage(message.raw);
-    return;
+    sendResponse({ ok: true });
+    return true;
   }
+
   if (message.type === 'WS_CLOSED') {
+    if (state.isRecording) {
+      state.isRecording = false;
+      chrome.storage.local.set({ isRecording: false });
+    }
     broadcastToPopup({ type: 'WS_DISCONNECTED' });
-    return;
+    sendResponse({ ok: true });
+    return true;
   }
+
   if (message.type === 'CAPTURE_ERROR') {
     broadcastToPopup({ type: 'ERROR', message: message.message });
-    return;
+    sendResponse({ ok: true });
+    return true;
   }
 
-  // Messages from popup
+  // FROM popup
   (async () => {
-    switch (message.type) {
-      case 'GET_STATE':
-        sendResponse({
-          isRecording: state.isRecording,
-          sessionId: state.sessionId,
-          meetingPlatform: state.meetingPlatform,
-          meetingTitle: state.meetingTitle,
-        });
-        break;
+    try {
+      switch (message.type) {
+        case 'GET_STATE':
+          sendResponse({
+            isRecording: state.isRecording,
+            sessionId: state.sessionId,
+            meetingPlatform: state.meetingPlatform,
+            meetingTitle: state.meetingTitle,
+          });
+          break;
 
-      case 'START_RECORDING':
-        try {
+        case 'START_RECORDING':
           await startRecording(message.tabId, message.meetingInfo);
           sendResponse({ success: true });
-        } catch (err) {
-          console.error('[BG] Start error:', err);
-          sendResponse({ success: false, error: err.message });
-        }
-        break;
+          break;
 
-      case 'STOP_RECORDING':
-        await stopRecording();
-        sendResponse({ success: true });
-        break;
+        case 'STOP_RECORDING':
+          await stopRecording();
+          sendResponse({ success: true });
+          break;
 
-      case 'MEETING_DETECTED':
-        state.meetingPlatform = message.platform;
-        state.meetingTitle = message.title;
-        broadcastToPopup({ type: 'MEETING_DETECTED', platform: message.platform, title: message.title });
-        break;
+        case 'MEETING_DETECTED':
+          state.meetingPlatform = message.platform;
+          state.meetingTitle = message.title;
+          broadcastToPopup({ type: 'MEETING_DETECTED', platform: message.platform, title: message.title });
+          sendResponse({ ok: true });
+          break;
 
-      case 'MEETING_ENDED':
-        if (state.isRecording) await stopRecording();
-        state.meetingPlatform = null;
-        broadcastToPopup({ type: 'MEETING_ENDED' });
-        break;
+        case 'MEETING_ENDED':
+          if (state.isRecording) await stopRecording();
+          state.meetingPlatform = null;
+          broadcastToPopup({ type: 'MEETING_ENDED' });
+          sendResponse({ ok: true });
+          break;
+
+        default:
+          sendResponse({ ok: true });
+      }
+    } catch (err) {
+      console.error('[BG] Handler error:', err);
+      sendResponse({ success: false, error: err.message });
     }
   })();
   return true;
@@ -93,7 +107,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 const handleBackendMessage = (raw) => {
   try {
     const data = JSON.parse(raw);
-    console.log('[BG] Backend msg:', data.type);
+    console.log('[BG] Backend msg:', data.type, data.message || '');
 
     switch (data.type) {
       case 'session_started':
@@ -111,6 +125,7 @@ const handleBackendMessage = (raw) => {
         broadcastToPopup({ type: 'TRANSCRIPT_READY', utterances: data.utterances, sessionId: data.sessionId });
         break;
       case 'error':
+        console.error('[BG] Backend error:', data.message);
         broadcastToPopup({ type: 'BACKEND_ERROR', message: data.message });
         break;
       case 'connected':
@@ -126,7 +141,7 @@ const handleBackendMessage = (raw) => {
 const startRecording = async (tabId, meetingInfo) => {
   if (state.isRecording) throw new Error('Already recording');
 
-  // Get stream ID from tabCapture (must be in background)
+  // tabCapture.getMediaStreamId MUST run in background service worker
   const streamId = await new Promise((resolve, reject) => {
     chrome.tabCapture.getMediaStreamId(
       { targetTabId: tabId },
@@ -140,20 +155,21 @@ const startRecording = async (tabId, meetingInfo) => {
     );
   });
 
-  console.log('[BG] Got streamId:', streamId);
+  console.log('[BG] Got streamId:', streamId.substring(0, 20) + '...');
 
-  // Create offscreen document to do actual capture
+  // Create offscreen doc BEFORE sending message
   await ensureOffscreen();
 
-  // Send streamId to offscreen doc
+  // Tell offscreen to connect WS + start capturing
   const response = await chrome.runtime.sendMessage({
     type: 'START_CAPTURE',
     streamId,
     title: meetingInfo?.title || 'Meeting Recording',
+    target: 'offscreen', // helps route the message
   });
 
-  if (!response?.success) {
-    throw new Error(response?.error || 'Offscreen capture failed');
+  if (response && response.success === false) {
+    throw new Error(response.error || 'Offscreen capture failed');
   }
 
   state.isRecording = true;
@@ -168,17 +184,16 @@ const startRecording = async (tabId, meetingInfo) => {
 // ── Stop recording ────────────────────────────────────────────
 const stopRecording = async () => {
   try {
-    await chrome.runtime.sendMessage({ type: 'STOP_CAPTURE' });
+    await chrome.runtime.sendMessage({ type: 'STOP_CAPTURE', target: 'offscreen' });
   } catch (e) {
-    console.warn('[BG] Stop capture error:', e);
+    console.warn('[BG] Stop capture msg error (offscreen may be closed):', e.message);
   }
 
   state.isRecording = false;
   await chrome.storage.local.set({ isRecording: false });
   broadcastToPopup({ type: 'RECORDING_STOPPED' });
 
-  // Close offscreen doc after short delay
-  setTimeout(() => closeOffscreen(), 2000);
+  setTimeout(() => closeOffscreen(), 3000);
 };
 
 // ── Broadcast to popup ────────────────────────────────────────

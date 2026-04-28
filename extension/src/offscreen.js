@@ -1,4 +1,4 @@
-// Offscreen document — has full DOM access including getUserMedia
+// Offscreen document — full DOM access, handles getUserMedia + WebSocket
 
 const BACKEND_WS_URL = 'ws://localhost:3001';
 
@@ -6,58 +6,61 @@ let ws = null;
 let mediaRecorder = null;
 let captureStream = null;
 let pendingStreamId = null;
-let pendingTitle = null;
 
-// ── WebSocket ─────────────────────────────────────────────────
+// ── WebSocket connection ──────────────────────────────────────
 const connectWS = () => {
   return new Promise((resolve, reject) => {
     ws = new WebSocket(BACKEND_WS_URL);
 
     ws.onopen = () => {
-      console.log('[Offscreen] WS connected');
+      console.log('[Offscreen] WS connected to backend');
       resolve();
     };
 
     ws.onmessage = async (event) => {
       try {
         const data = JSON.parse(event.data);
-        console.log('[Offscreen] Backend msg:', data.type);
+        console.log('[Offscreen] Backend:', data.type);
 
-        // ← KEY FIX: only start audio AFTER backend confirms session started
         if (data.type === 'session_started') {
-          console.log('[Offscreen] Session confirmed, starting audio capture...');
+          // NOW safe to start audio — session is confirmed on backend
+          console.log('[Offscreen] Session confirmed:', data.sessionId, '— starting capture');
           try {
             await startAudioCapture(pendingStreamId);
-            chrome.runtime.sendMessage({ type: 'FROM_BACKEND', raw: event.data });
           } catch (err) {
+            console.error('[Offscreen] Audio capture failed:', err);
             chrome.runtime.sendMessage({
               type: 'FROM_BACKEND',
-              raw: JSON.stringify({ type: 'error', message: err.message })
+              raw: JSON.stringify({ type: 'error', message: 'Audio capture failed: ' + err.message }),
             });
+            return;
           }
-        } else {
-          // Forward all other messages to background
-          chrome.runtime.sendMessage({ type: 'FROM_BACKEND', raw: event.data });
         }
+
+        // Forward ALL backend messages to background worker
+        chrome.runtime.sendMessage({ type: 'FROM_BACKEND', raw: event.data }).catch(() => {});
+
       } catch (e) {
-        console.error('[Offscreen] Parse error:', e);
+        console.error('[Offscreen] Message parse error:', e);
       }
     };
 
     ws.onerror = (e) => {
-      console.error('[Offscreen] WS error:', e);
-      reject(new Error('WebSocket connection failed — is Docker running?'));
+      console.error('[Offscreen] WS error');
+      reject(new Error('Cannot connect to backend at ws://localhost:3001 — is Docker running?'));
     };
 
     ws.onclose = () => {
       console.log('[Offscreen] WS closed');
-      chrome.runtime.sendMessage({ type: 'WS_CLOSED' });
+      chrome.runtime.sendMessage({ type: 'WS_CLOSED' }).catch(() => {});
     };
   });
 };
 
-// ── Audio capture (called AFTER session_started confirmed) ────
+// ── Audio capture ─────────────────────────────────────────────
 const startAudioCapture = async (streamId) => {
+  if (!streamId) throw new Error('No streamId provided');
+
   const stream = await navigator.mediaDevices.getUserMedia({
     audio: {
       mandatory: {
@@ -74,15 +77,21 @@ const startAudioCapture = async (streamId) => {
     ? 'audio/webm;codecs=opus'
     : 'audio/webm';
 
+  console.log('[Offscreen] Using mimeType:', mimeType);
+
   mediaRecorder = new MediaRecorder(stream, {
     mimeType,
     audioBitsPerSecond: 16000,
   });
 
   mediaRecorder.ondataavailable = async (event) => {
-    if (event.data?.size > 0 && ws?.readyState === WebSocket.OPEN) {
-      const buffer = await event.data.arrayBuffer();
-      ws.send(buffer);
+    if (event.data && event.data.size > 0 && ws && ws.readyState === WebSocket.OPEN) {
+      try {
+        const buffer = await event.data.arrayBuffer();
+        ws.send(buffer);
+      } catch (e) {
+        console.error('[Offscreen] Send error:', e);
+      }
     }
   };
 
@@ -90,61 +99,76 @@ const startAudioCapture = async (streamId) => {
     console.error('[Offscreen] MediaRecorder error:', err);
     chrome.runtime.sendMessage({
       type: 'FROM_BACKEND',
-      raw: JSON.stringify({ type: 'error', message: 'Audio capture error: ' + err.message })
-    });
+      raw: JSON.stringify({ type: 'error', message: 'MediaRecorder error: ' + err.message }),
+    }).catch(() => {});
   };
 
-  mediaRecorder.start(250);
-  console.log('[Offscreen] MediaRecorder started, mimeType:', mimeType);
+  mediaRecorder.start(500); // 500ms chunks — more stable than 250ms
+  console.log('[Offscreen] MediaRecorder started');
 };
 
 // ── Stop capture ──────────────────────────────────────────────
 const stopCapture = () => {
-  if (mediaRecorder?.state !== 'inactive') {
-    mediaRecorder?.stop();
-  }
-  captureStream?.getTracks().forEach(t => t.stop());
+  console.log('[Offscreen] Stopping capture...');
+  try {
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+      mediaRecorder.stop();
+    }
+  } catch (e) {}
+  try {
+    if (captureStream) {
+      captureStream.getTracks().forEach(t => t.stop());
+    }
+  } catch (e) {}
   mediaRecorder = null;
   captureStream = null;
 };
 
-// ── Message listener (from background worker) ─────────────────
+// ── Message listener ──────────────────────────────────────────
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  // Only handle messages targeted at offscreen
+  if (message.target && message.target !== 'offscreen') {
+    return false;
+  }
+
+  // Also handle untargeted offscreen-specific messages
+  if (message.type !== 'START_CAPTURE' && message.type !== 'STOP_CAPTURE') {
+    return false;
+  }
+
   (async () => {
     try {
       if (message.type === 'START_CAPTURE') {
-        // Store streamId — we'll use it after session_started is confirmed
         pendingStreamId = message.streamId;
-        pendingTitle = message.title || 'Meeting Recording';
 
-        // Step 1: Connect WebSocket
+        // Connect WS first
         await connectWS();
 
-        // Step 2: Tell backend to start session
-        // Audio capture starts ONLY after we receive session_started back
+        // Send start_session — audio starts ONLY after session_started reply
         ws.send(JSON.stringify({
           type: 'start_session',
-          title: pendingTitle,
+          title: message.title || 'Meeting Recording',
         }));
 
-        console.log('[Offscreen] start_session sent, waiting for confirmation...');
+        console.log('[Offscreen] start_session sent — waiting for backend confirmation');
         sendResponse({ success: true });
       }
 
       else if (message.type === 'STOP_CAPTURE') {
         stopCapture();
-        if (ws?.readyState === WebSocket.OPEN) {
+        if (ws && ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: 'stop_session' }));
+          console.log('[Offscreen] stop_session sent');
         }
         sendResponse({ success: true });
       }
-
     } catch (err) {
-      console.error('[Offscreen] Error:', err);
+      console.error('[Offscreen] Error handling message:', err);
       sendResponse({ success: false, error: err.message });
     }
   })();
-  return true;
+
+  return true; // keep channel open for async sendResponse
 });
 
-console.log('[Offscreen] Document ready');
+console.log('[Offscreen] Ready');
