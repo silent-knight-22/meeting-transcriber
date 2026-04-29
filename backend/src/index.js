@@ -98,6 +98,7 @@ wss.on('connection', (ws) => {
   ws.send(JSON.stringify({ type: 'connected', message: 'Meeting Transcriber backend ready' }));
 });
 
+
 // ── Start Server ──────────────────────────────────────────────
 server.listen(env.port, () => {
   logger.info(`Server running on port ${env.port} in ${env.nodeEnv} mode`);
