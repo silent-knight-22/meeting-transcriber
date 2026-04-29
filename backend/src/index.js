@@ -49,7 +49,6 @@ wss.on('connection', (ws) => {
         return;
       }
 
-      // Otherwise parse as JSON control message
       const data = JSON.parse(message.toString());
 
       if (data.type === 'start_session') {
